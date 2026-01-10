@@ -58,17 +58,31 @@ DOCUMENTS = [
 @st.cache_resource
 def initialize_embedding_model():
     """Initialize and cache the embedding model."""
-    return SentenceTransformer('all-MiniLM-L6-v2')
+    with st.status("Loading embedding model...", expanded=True) as status:
+        st.write("Loading SentenceTransformer model: all-MiniLM-L6-v2")
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        st.write("✓ Embedding model loaded successfully!")
+        status.update(label="Embedding model ready!", state="complete")
+    return model
 
 @st.cache_resource
 def build_faiss_index(_embedding_model):
     """Build and cache the FAISS index."""
-    doc_texts = [doc["content"] for doc in DOCUMENTS]
-    embeddings = _embedding_model.encode(doc_texts)
+    with st.status("Building FAISS vector database...", expanded=True) as status:
+        st.write(f"Step 1: Extracting text from {len(DOCUMENTS)} documents")
+        doc_texts = [doc["content"] for doc in DOCUMENTS]
 
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(embeddings.astype('float32'))
+        st.write("Step 2: Generating embeddings for all documents")
+        embeddings = _embedding_model.encode(doc_texts)
+        st.write(f"✓ Generated embeddings with dimension: {embeddings.shape[1]}")
+
+        st.write("Step 3: Creating FAISS index with L2 (Euclidean) distance")
+        dimension = embeddings.shape[1]
+        index = faiss.IndexFlatL2(dimension)
+        index.add(embeddings.astype('float32'))
+        st.write(f"✓ FAISS index created with {index.ntotal} vectors")
+
+        status.update(label="Vector database ready!", state="complete")
 
     return index, embeddings
 
@@ -76,12 +90,7 @@ def initialize_llm():
     """Initialize the language model."""
     # Check for API key in environment or Streamlit secrets
     api_key = os.getenv('GOOGLE_API_KEY') or st.secrets.get("GOOGLE_API_KEY", None)
-
-    if not api_key:
-        st.error("⚠️ Google API Key not found. Please set it in Streamlit secrets or environment variables.")
-        st.stop()
-
-    return ChatGoogleGenerativeAI(model="gemini-pro", temperature=0, google_api_key=api_key)
+    return ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", temperature=0)
 
 def get_relevant_articles(query, embedding_model, index, k=3):
     """
@@ -226,33 +235,83 @@ def main():
     )
 
     if query:
-        with st.spinner("🔎 Searching knowledge base and generating answer..."):
-            try:
-                # Generate prompt and get relevant articles
-                prompt, relevant_articles = generate_prompt(query, embedding_model, index)
+        # Add a toggle to show/hide processing steps
+        show_process = st.checkbox("Show processing steps (Educational Mode)", value=True)
 
-                if prompt is None:
-                    st.warning("I couldn't find any relevant information to answer your question.")
-                else:
-                    # Get LLM response
+        st.divider()
+
+        try:
+            if show_process:
+                # Show detailed processing steps
+                st.subheader("🔍 RAG Pipeline Process")
+
+                # Step 1: Query embedding
+                with st.expander("**Step 1: Convert Query to Embedding**", expanded=True):
+                    st.write(f"**Query:** {query}")
+                    st.write("Converting your question into a vector representation...")
+                    query_embedding = embedding_model.encode([query]).astype('float32')
+                    st.write(f"✓ Query embedded into {query_embedding.shape[1]}-dimensional vector")
+                    st.code(f"Embedding shape: {query_embedding.shape}")
+
+                # Step 2: Vector search
+                with st.expander("**Step 2: Search FAISS Vector Database**", expanded=True):
+                    st.write("Searching for the 3 most similar documents using L2 distance...")
+                    distances, indices = index.search(query_embedding, 3)
+                    st.write(f"✓ Found {len(indices[0])} relevant documents")
+
+                    # Show search results
+                    for i, (idx, distance) in enumerate(zip(indices[0], distances[0]), 1):
+                        st.write(f"**Match {i}:** {DOCUMENTS[idx]['title']} (Distance: {distance:.4f})")
+
+                # Step 3: Retrieve documents
+                with st.expander("**Step 3: Retrieve Full Document Content**", expanded=True):
+                    relevant_articles = get_relevant_articles(query, embedding_model, index, k=3)
+                    st.write(f"Retrieved {len(relevant_articles)} documents:")
+                    for i, article in enumerate(relevant_articles, 1):
+                        st.write(f"{i}. **{article['title']}** ({article['date']})")
+
+                # Step 4: Build prompt
+                with st.expander("**Step 4: Build RAG Prompt**", expanded=True):
+                    prompt, _ = generate_prompt(query, embedding_model, index)
+                    st.write("Constructing prompt with context for the LLM...")
+                    st.code(prompt, language="text")
+
+                # Step 5: LLM generation
+                with st.expander("**Step 5: Generate Answer with LLM**", expanded=True):
+                    st.write("Sending prompt to Google Gemini Pro...")
+                    with st.spinner("Waiting for LLM response..."):
+                        response = llm.invoke(prompt)
+                    st.write("✓ Response received!")
+
+                st.divider()
+            else:
+                # Quick mode without detailed steps
+                with st.spinner("🔎 Searching knowledge base and generating answer..."):
+                    prompt, relevant_articles = generate_prompt(query, embedding_model, index)
+
+                    if prompt is None:
+                        st.warning("I couldn't find any relevant information to answer your question.")
+                        st.stop()
+
                     response = llm.invoke(prompt)
 
-                    # Display answer
-                    st.subheader("💬 Answer:")
-                    st.markdown(response.content)
+            # Display final answer
+            st.subheader("💬 Final Answer:")
+            st.markdown(response.content)
 
-                    # Display sources
-                    st.divider()
-                    st.subheader("📖 Sources:")
+            # Display sources
+            st.divider()
+            st.subheader("📖 Source Documents:")
 
-                    for i, article in enumerate(relevant_articles, 1):
-                        with st.expander(f"Source {i}: {article['title']} (Relevance Score: {1/(1+article['distance']):.2f})"):
-                            st.markdown(f"**Date:** {article['date']}")
-                            st.markdown(f"**Content:** {article['content']}")
-                            st.caption(f"Distance: {article['distance']:.4f}")
+            relevant_articles = get_relevant_articles(query, embedding_model, index, k=3)
+            for i, article in enumerate(relevant_articles, 1):
+                with st.expander(f"Source {i}: {article['title']} (Relevance Score: {1/(1+article['distance']):.2f})"):
+                    st.markdown(f"**Date:** {article['date']}")
+                    st.markdown(f"**Content:** {article['content']}")
+                    st.caption(f"L2 Distance: {article['distance']:.4f}")
 
-            except Exception as e:
-                st.error(f"Error processing query: {str(e)}")
+        except Exception as e:
+            st.error(f"Error processing query: {str(e)}")
 
 if __name__ == "__main__":
     main()

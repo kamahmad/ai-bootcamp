@@ -3,5 +3,6 @@ google-generativeai
 langchain-google-genai
 faiss-cpu
 sentence-transformers
-numpy
+numpy<2.0.0
 python-dotenv
+torch>=2.0.0
