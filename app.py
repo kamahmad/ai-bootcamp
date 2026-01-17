@@ -121,10 +121,11 @@ def build_faiss_index(_embedding_model, _chunks):
 
     return index, embeddings
 
+@st.cache_resource
 def initialize_llm():
-    """Initialize the language model."""
+    """Initialize the language model. Cached - runs only once."""
     api_key = os.getenv('GOOGLE_API_KEY') or st.secrets.get("GOOGLE_API_KEY", None)
-    return ChatGoogleGenerativeAI(model="gemini-2.0-flash-exp", temperature=0)
+    return ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", temperature=0)
 
 def get_relevant_chunks(query, embedding_model, index, chunks, k=3):
     """
